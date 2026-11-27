@@ -1,43 +1,174 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+name: Test and Deploy to GitHub Pages
 
 on:
-  # Runs on pushes targeting the default branch
   push:
     branches: ["main"]
-
-  # Allows you to run this workflow manually from the Actions tab
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  # Single deploy job since we're just deploying
+  # -------------------------
+  # JOB 1: AUTOMATED TESTING
+  # -------------------------
+  test:
+    name: HTML Validation & Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Verify index.html exists
+        run: test -f index.html
+
+      - name: Run automated website tests
+        run: |
+          python - <<'PY'
+          from html.parser import HTMLParser
+          from pathlib import Path
+          import sys
+
+          html = Path("index.html").read_text(encoding="utf-8")
+
+          class WebsiteValidator(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.ids = set()
+                  self.links = []
+                  self.images = []
+                  self.title_found = False
+                  self.in_title = False
+                  self.title_text = ""
+                  self.headings = []
+
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+
+                  if "id" in attrs:
+                      self.ids.add(attrs["id"])
+
+                  if tag == "a" and "href" in attrs:
+                      self.links.append(attrs["href"])
+
+                  if tag == "img":
+                      self.images.append(attrs)
+
+                  if tag == "title":
+                      self.in_title = True
+
+                  if tag in ("h1", "h2", "h3"):
+                      self.headings.append(tag)
+
+              def handle_endtag(self, tag):
+                  if tag == "title":
+                      self.in_title = False
+
+              def handle_data(self, data):
+                  if self.in_title:
+                      self.title_text += data.strip()
+
+          parser = WebsiteValidator()
+          parser.feed(html)
+
+          errors = []
+
+          # Test 1: Page title exists
+          if not parser.title_text:
+              errors.append("Missing page title")
+
+          # Test 2: Main heading exists
+          if "<h1" not in html.lower():
+              errors.append("Missing main H1 heading")
+
+          # Test 3: Required website sections exist
+          required_sections = [
+              "about",
+              "gallery",
+              "menu",
+              "timings",
+              "contact"
+          ]
+
+          for section in required_sections:
+              if section not in parser.ids:
+                  errors.append(f"Missing section ID: {section}")
+
+          # Test 4: Internal links point to valid sections
+          for link in parser.links:
+              if link.startswith("#") and link[1:] not in parser.ids:
+                  errors.append(f"Broken internal link: {link}")
+
+          # Test 5: Images have alt text
+          for index, img in enumerate(parser.images, start=1):
+              if not img.get("alt", "").strip():
+                  errors.append(f"Image {index} is missing alt text")
+
+          # Test 6: Basic HTML document structure
+          for tag in ["<html", "<head", "<body"]:
+              if tag not in html.lower():
+                  errors.append(f"Missing HTML structure: {tag}")
+
+          # Results
+          if errors:
+              print("TESTS FAILED")
+              for error in errors:
+                  print(f"❌ {error}")
+              sys.exit(1)
+
+          print("ALL TESTS PASSED")
+          print("✔ Page title")
+          print("✔ Main heading")
+          print("✔ Required sections")
+          print("✔ Internal navigation links")
+          print("✔ Image alt text")
+          print("✔ HTML document structure")
+          PY
+
+  # -------------------------
+  # JOB 2: DEPLOYMENT
+  # Runs ONLY when tests pass
+  # -------------------------
   deploy:
+    name: Deploy Website
+    needs: test
+
+    # Deploy only on main push or manual run.
+    # Pull requests run tests but never publish.
+    if: github.event_name != 'pull_request'
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Setup Pages
+
+      - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
-      - name: Upload artifact
+
+      - name: Upload website artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload entire repository
-          path: '.'
+          path: './'
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
